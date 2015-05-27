@@ -25,6 +25,7 @@ from calibre.library.server.opds import OPDSServer
 from calibre.library.server.cache import Cache
 from calibre.library.server.browse import BrowseServer
 from calibre.library.server.ajax import AjaxServer
+from calibre.library.server.isbn import ISBNServer
 from calibre import prints, as_unicode
 
 
@@ -120,7 +121,7 @@ cherrypy.engine.bonjour = BonJour(cherrypy.engine)
 # }}}
 
 class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
-        BrowseServer, AjaxServer):
+        BrowseServer, AjaxServer, ISBNServer):
 
     server_name = __appname__ + '/' + __version__
 
