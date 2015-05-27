@@ -81,7 +81,7 @@ class LibraryViewMixin(object):  # {{{
         for v in (self.memory_view, self.card_a_view, self.card_b_view):
             v.set_context_menu(dm, ec)
 
-        if self.cover_flow is not None:
+        if hasattr(self.cover_flow, 'set_context_menu'):
             cm = QMenu(self.cover_flow)
             populate_menu(cm,
                     gprefs['action-layout-context-menu-cover-browser'], self.iactions)
@@ -325,6 +325,25 @@ class VLTabs(QTabBar):  # {{{
         self.tabCloseRequested.connect(self.tab_close)
         self.setStyleSheet('QTabBar::tab:selected { font-weight: bold } QTabBar::tab { text-align: center }')
         self.setVisible(gprefs['show_vl_tabs'])
+        self.next_action = a = QAction(self)
+        a.triggered.connect(partial(self.next_tab, delta=1)), self.gui.addAction(a)
+        self.previous_action = a = QAction(self)
+        a.triggered.connect(partial(self.next_tab, delta=-1)), self.gui.addAction(a)
+        self.gui.keyboard.register_shortcut(
+            'virtual-library-tab-bar-next', _('Next virtual library'), action=self.next_action,
+            default_keys=('Ctrl+Right',),
+            description=_('Switch to the next Virtual Library in the Virtual Library tab bar')
+        )
+        self.gui.keyboard.register_shortcut(
+            'virtual-library-tab-bar-previous', _('Previous virtual library'), action=self.previous_action,
+            default_keys=('Ctrl+Left',),
+            description=_('Switch to the previous Virtual Library in the Virtual Library tab bar')
+        )
+
+    def next_tab(self, delta=1):
+        if self.count() > 1 and self.isVisible():
+            idx = (self.currentIndex() + delta) % self.count()
+            self.setCurrentIndex(idx)
 
     def enable_bar(self):
         gprefs['show_vl_tabs'] = True
@@ -503,6 +522,8 @@ class LayoutMixin(object):  # {{{
         self.book_details.search_requested.connect(self.search.set_search_string)
         self.book_details.remove_specific_format.connect(
                 self.iactions['Remove Books'].remove_format_by_id)
+        self.book_details.remove_metadata_item.connect(
+                self.iactions['Edit Metadata'].remove_metadata_item)
         self.book_details.save_specific_format.connect(
                 self.iactions['Save To Disk'].save_library_format_by_ids)
         self.book_details.restore_specific_format.connect(
@@ -526,8 +547,7 @@ class LayoutMixin(object):  # {{{
 
     def bd_cover_changed(self, id_, cdata):
         self.library_view.model().db.set_cover(id_, cdata)
-        if self.cover_flow:
-            self.cover_flow.dataChanged()
+        self.refresh_cover_browser()
 
     def bd_open_cover_with(self, book_id, entry):
         cpath = self.current_db.new_api.format_abspath(book_id, '__COVER_INTERNAL__')
@@ -558,8 +578,7 @@ class LayoutMixin(object):  # {{{
     def bd_cover_removed(self, id_):
         self.library_view.model().db.remove_cover(id_, commit=True,
                 notify=False)
-        if self.cover_flow:
-            self.cover_flow.dataChanged()
+        self.refresh_cover_browser()
 
     def bd_copy_link(self, url):
         if url:

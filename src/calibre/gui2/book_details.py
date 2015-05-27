@@ -5,6 +5,7 @@ __license__   = 'GPL v3'
 __copyright__ = '2010, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
+import cPickle
 from binascii import unhexlify
 from functools import partial
 
@@ -104,6 +105,97 @@ def render_data(mi, use_roman_numbers=True, all_fields=False):
 
 # }}}
 
+def details_context_menu_event(view, ev, book_info):  # {{{
+    p = view.page()
+    mf = p.mainFrame()
+    r = mf.hitTestContent(ev.pos())
+    url = unicode(r.linkUrl().toString(QUrl.None)).strip()
+    menu = p.createStandardContextMenu()
+    ca = view.pageAction(p.Copy)
+    for action in list(menu.actions()):
+        if action is not ca:
+            menu.removeAction(action)
+    if not r.isNull():
+        if url.startswith('format:'):
+            parts = url.split(':')
+            try:
+                book_id, fmt = int(parts[1]), parts[2].upper()
+            except:
+                import traceback
+                traceback.print_exc()
+            else:
+                from calibre.gui2.ui import get_gui
+                from calibre.ebooks.oeb.polish.main import SUPPORTED
+                db = get_gui().current_db.new_api
+                ofmt = fmt.upper() if fmt.startswith('ORIGINAL_') else 'ORIGINAL_' + fmt
+                nfmt = ofmt[len('ORIGINAL_'):]
+                fmts = {x.upper() for x in db.formats(book_id)}
+                for a, t in [('remove', _('Delete the %s format')),
+                    ('save', _('Save the %s format to disk')),
+                    ('restore', _('Restore the %s format')),
+                    ('compare', ''),
+                ]:
+                    if a == 'restore' and not fmt.startswith('ORIGINAL_'):
+                        continue
+                    if a == 'compare':
+                        if ofmt not in fmts or nfmt not in SUPPORTED:
+                            continue
+                        t = _('Compare to the %s format') % (fmt[9:] if fmt.startswith('ORIGINAL_') else ofmt)
+                    else:
+                        t = t % fmt
+                    ac = getattr(book_info, '%s_format_action'%a)
+                    ac.current_fmt = (book_id, fmt)
+                    ac.setText(t)
+                    menu.addAction(ac)
+                if not fmt.upper().startswith('ORIGINAL_'):
+                    from calibre.gui2.open_with import populate_menu, edit_programs
+                    m = QMenu(_('Open %s with...') % fmt.upper())
+                    populate_menu(m, partial(book_info.open_with, book_id, fmt), fmt)
+                    if len(m.actions()) == 0:
+                        menu.addAction(_('Open %s with...') % fmt.upper(), partial(book_info.choose_open_with, book_id, fmt))
+                    else:
+                        m.addSeparator()
+                        m.addAction(_('Add other application for %s files...') % fmt.upper(), partial(book_info.choose_open_with, book_id, fmt))
+                        m.addAction(_('Edit Open With applications...'), partial(edit_programs, fmt, book_info))
+                        menu.addMenu(m)
+                ac = book_info.copy_link_action
+                ac.current_url = r.linkElement().attribute('data-full-path')
+                if ac.current_url:
+                    ac.setText(_('&Copy path to file'))
+                    menu.addAction(ac)
+        else:
+            el = r.linkElement()
+            data = el.attribute('data-item')
+            author = el.toPlainText() if unicode(el.attribute('calibre-data')) == u'authors' else None
+            if not url.startswith('search:'):
+                for a, t in [('copy', _('&Copy Link')),
+                ]:
+                    ac = getattr(book_info, '%s_link_action'%a)
+                    ac.current_url = url
+                    if url.startswith('path:'):
+                        ac.current_url = el.attribute('title')
+                    ac.setText(t)
+                    menu.addAction(ac)
+            if author is not None:
+                ac = book_info.manage_author_action
+                ac.current_fmt = author
+                ac.setText(_('Manage %s') % author)
+                menu.addAction(ac)
+            if data:
+                try:
+                    field, value, book_id = cPickle.loads(unhexlify(data))
+                except Exception:
+                    field = value = book_id = None
+                if field:
+                    ac = book_info.remove_item_action
+                    ac.data = (field, value, book_id)
+                    ac.setText(_('Remove %s from this book') % value)
+                    menu.addAction(ac)
+
+    if len(menu.actions()) > 0:
+        menu.exec_(ev.globalPos())
+# }}}
+
 class CoverView(QWidget):  # {{{
 
     cover_changed = pyqtSignal(object, object)
@@ -115,7 +207,7 @@ class CoverView(QWidget):  # {{{
         self._current_pixmap_size = QSize(120, 120)
         self.vertical = vertical
 
-        self.animation = QPropertyAnimation(self, 'current_pixmap_size', self)
+        self.animation = QPropertyAnimation(self, b'current_pixmap_size', self)
         self.animation.setEasingCurve(QEasingCurve(QEasingCurve.OutExpo))
         self.animation.setDuration(1000)
         self.animation.setStartValue(QSize(0, 0))
@@ -305,6 +397,7 @@ class BookInfo(QWebView):
 
     link_clicked = pyqtSignal(object)
     remove_format = pyqtSignal(int, object)
+    remove_item = pyqtSignal(int, object, object)
     save_format = pyqtSignal(int, object)
     restore_format = pyqtSignal(int, object)
     compare_format = pyqtSignal(int, object)
@@ -335,7 +428,15 @@ class BookInfo(QWebView):
             ac.current_url = None
             ac.triggered.connect(getattr(self, '%s_triggerred'%x))
             setattr(self, '%s_action'%x, ac)
+        self.remove_item_action = ac = QAction(QIcon(I('minus.png')), '...', self)
+        ac.data = (None, None, None)
+        ac.triggered.connect(self.remove_item_triggered)
         self.setFocusPolicy(Qt.NoFocus)
+
+    def remove_item_triggered(self):
+        field, value, book_id = self.remove_item_action.data
+        if field:
+            self.remove_item.emit(book_id, field, value)
 
     def context_action_triggered(self, which):
         f = getattr(self, '%s_action'%which).current_fmt
@@ -389,83 +490,7 @@ class BookInfo(QWebView):
             ev.ignore()
 
     def contextMenuEvent(self, ev):
-        p = self.page()
-        mf = p.mainFrame()
-        r = mf.hitTestContent(ev.pos())
-        url = unicode(r.linkUrl().toString(QUrl.None)).strip()
-        menu = p.createStandardContextMenu()
-        ca = self.pageAction(p.Copy)
-        for action in list(menu.actions()):
-            if action is not ca:
-                menu.removeAction(action)
-        if not r.isNull():
-            if url.startswith('format:'):
-                parts = url.split(':')
-                try:
-                    book_id, fmt = int(parts[1]), parts[2].upper()
-                except:
-                    import traceback
-                    traceback.print_exc()
-                else:
-                    from calibre.gui2.ui import get_gui
-                    from calibre.ebooks.oeb.polish.main import SUPPORTED
-                    db = get_gui().current_db.new_api
-                    ofmt = fmt.upper() if fmt.startswith('ORIGINAL_') else 'ORIGINAL_' + fmt
-                    nfmt = ofmt[len('ORIGINAL_'):]
-                    fmts = {x.upper() for x in db.formats(book_id)}
-                    for a, t in [('remove', _('Delete the %s format')),
-                        ('save', _('Save the %s format to disk')),
-                        ('restore', _('Restore the %s format')),
-                        ('compare', ''),
-                    ]:
-                        if a == 'restore' and not fmt.startswith('ORIGINAL_'):
-                            continue
-                        if a == 'compare':
-                            if ofmt not in fmts or nfmt not in SUPPORTED:
-                                continue
-                            t = _('Compare to the %s format') % (fmt[9:] if fmt.startswith('ORIGINAL_') else ofmt)
-                        else:
-                            t = t % fmt
-                        ac = getattr(self, '%s_format_action'%a)
-                        ac.current_fmt = (book_id, fmt)
-                        ac.setText(t)
-                        menu.addAction(ac)
-                    if not fmt.upper().startswith('ORIGINAL_'):
-                        from calibre.gui2.open_with import populate_menu, edit_programs
-                        m = QMenu(_('Open %s with...') % fmt.upper())
-                        populate_menu(m, partial(self.open_with, book_id, fmt), fmt)
-                        if len(m.actions()) == 0:
-                            menu.addAction(_('Open %s with...') % fmt.upper(), partial(self.choose_open_with, book_id, fmt))
-                        else:
-                            m.addSeparator()
-                            m.addAction(_('Add other application for %s files...') % fmt.upper(), partial(self.choose_open_with, book_id, fmt))
-                            m.addAction(_('Edit Open With applications...'), partial(edit_programs, fmt, self))
-                            menu.addMenu(m)
-                    ac = self.copy_link_action
-                    ac.current_url = r.linkElement().attribute('data-full-path')
-                    if ac.current_url:
-                        ac.setText(_('&Copy path to file'))
-                        menu.addAction(ac)
-            else:
-                el = r.linkElement()
-                author = el.toPlainText() if unicode(el.attribute('calibre-data')) == u'authors' else None
-                if not url.startswith('search:'):
-                    for a, t in [('copy', _('&Copy Link')),
-                    ]:
-                        ac = getattr(self, '%s_link_action'%a)
-                        ac.current_url = url
-                        if url.startswith('path:'):
-                            ac.current_url = el.attribute('title')
-                        ac.setText(t)
-                        menu.addAction(ac)
-                if author is not None:
-                    ac = self.manage_author_action
-                    ac.current_fmt = author
-                    ac.setText(_('Manage %s') % author)
-                    menu.addAction(ac)
-
-        if len(menu.actions()) > 0:
-            menu.exec_(ev.globalPos())
+        details_context_menu_event(self, ev, self)
 
     def open_with(self, book_id, fmt, entry):
         self.open_fmt_with.emit(book_id, fmt, entry)
@@ -575,6 +600,7 @@ class BookDetails(QWidget):  # {{{
     view_specific_format = pyqtSignal(int, object)
     search_requested = pyqtSignal(object)
     remove_specific_format = pyqtSignal(int, object)
+    remove_metadata_item = pyqtSignal(int, object, object)
     save_specific_format = pyqtSignal(int, object)
     restore_specific_format = pyqtSignal(int, object)
     compare_specific_format = pyqtSignal(int, object)
@@ -650,6 +676,7 @@ class BookDetails(QWidget):  # {{{
         self._layout.addWidget(self.book_info)
         self.book_info.link_clicked.connect(self.handle_click)
         self.book_info.remove_format.connect(self.remove_specific_format)
+        self.book_info.remove_item.connect(self.remove_metadata_item)
         self.book_info.open_fmt_with.connect(self.open_fmt_with)
         self.book_info.save_format.connect(self.save_specific_format)
         self.book_info.restore_format.connect(self.restore_specific_format)

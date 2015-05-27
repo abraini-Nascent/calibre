@@ -8,7 +8,7 @@ __docformat__ = 'restructuredtext en'
 import os, shutil, copy
 from functools import partial
 
-from PyQt5.Qt import QMenu, QModelIndex, QTimer, QIcon
+from PyQt5.Qt import QMenu, QModelIndex, QTimer, QIcon, QApplication
 
 from calibre.gui2 import error_dialog, Dispatcher, question_dialog, gprefs
 from calibre.gui2.dialogs.metadata_bulk import MetadataBulkDialog
@@ -322,17 +322,20 @@ class EditMetadataAction(InterfaceAction):
             m.refresh_rows(rows_to_refresh)
 
         if changed:
-            m.refresh_ids(list(changed))
-            current = self.gui.library_view.currentIndex()
-            if self.gui.cover_flow:
-                self.gui.cover_flow.dataChanged()
-            m.current_changed(current, previous)
-            self.gui.tags_view.recount()
+            self.refresh_books_after_metadata_edit(changed, previous)
         if self.gui.library_view.alternate_views.current_view is view:
             if hasattr(view, 'restore_hpos'):
                 view.restore_hpos(hpos)
             else:
                 view.horizontalScrollBar().setValue(hpos)
+
+    def refresh_books_after_metadata_edit(self, book_ids, previous=None):
+        m = self.gui.library_view.model()
+        m.refresh_ids(list(book_ids))
+        current = self.gui.library_view.currentIndex()
+        self.gui.refresh_cover_browser()
+        m.current_changed(current, previous or current)
+        self.gui.tags_view.recount()
 
     def do_edit_metadata(self, row_list, current_row, editing_multiple):
         from calibre.gui2.metadata.single import edit_metadata
@@ -397,8 +400,7 @@ class EditMetadataAction(InterfaceAction):
             else:
                 m.refresh_ids(refresh_books)
             self.gui.tags_view.recount()
-            if self.gui.cover_flow:
-                self.gui.cover_flow.dataChanged()
+            self.gui.refresh_cover_browser()
             self.gui.library_view.select_rows(book_ids)
 
     # Merge books {{{
@@ -418,8 +420,8 @@ class EditMetadataAction(InterfaceAction):
                         show=True)
         if len(rows) > 5:
             if not confirm('<p>'+_('You are about to merge more than 5 books.  '
-                                    'Are you <b>sure</b> you want to proceed?')
-                                +'</p>', 'merge_too_many_books', self.gui):
+                                    'Are you <b>sure</b> you want to proceed?') +
+                           '</p>', 'merge_too_many_books', self.gui):
                 return
 
         dest_id, src_ids = self.books_to_merge(rows)
@@ -430,8 +432,8 @@ class EditMetadataAction(InterfaceAction):
                 'will be added to the <b>first selected book</b> (%s).<br> '
                 'The second and subsequently selected books will not '
                 'be deleted or changed.<br><br>'
-                'Please confirm you want to proceed.')%title
-            +'</p>', 'merge_books_safe', self.gui):
+                'Please confirm you want to proceed.')%title +
+                           '</p>', 'merge_books_safe', self.gui):
                 return
             self.add_formats(dest_id, self.formats_for_books(rows))
             self.merge_metadata(dest_id, src_ids)
@@ -446,8 +448,8 @@ class EditMetadataAction(InterfaceAction):
                 'All book formats of the first selected book will be kept '
                 'and any duplicate formats in the second and subsequently selected books '
                 'will be permanently <b>deleted</b> from your calibre library.<br><br>  '
-                'Are you <b>sure</b> you want to proceed?')%title
-            +'</p>', 'merge_only_formats', self.gui):
+                'Are you <b>sure</b> you want to proceed?')%title +
+                           '</p>', 'merge_only_formats', self.gui):
                 return
             self.add_formats(dest_id, self.formats_for_books(rows))
             self.delete_books_after_merge(src_ids)
@@ -460,8 +462,8 @@ class EditMetadataAction(InterfaceAction):
                 'All book formats of the first selected book will be kept '
                 'and any duplicate formats in the second and subsequently selected books '
                 'will be permanently <b>deleted</b> from your calibre library.<br><br>  '
-                'Are you <b>sure</b> you want to proceed?')%title
-            +'</p>', 'merge_books', self.gui):
+                'Are you <b>sure</b> you want to proceed?')%title +
+                           '</p>', 'merge_books', self.gui):
                 return
             self.add_formats(dest_id, self.formats_for_books(rows))
             self.merge_metadata(dest_id, src_ids)
@@ -736,6 +738,7 @@ class EditMetadataAction(InterfaceAction):
                 _('Failed to apply updated metadata for some books'
                     ' in your library. Click "Show Details" to see '
                     'details.'), det_msg='\n\n'.join(msg), show=True)
+        changed_books = len(self.applied_ids or ())
         self.refresh_gui(self.applied_ids)
 
         self.apply_id_map = []
@@ -745,16 +748,34 @@ class EditMetadataAction(InterfaceAction):
                 self.apply_callback(list(self.applied_ids))
         finally:
             self.apply_callback = None
+        if changed_books:
+            QApplication.alert(self.gui, 2000)
 
     def refresh_gui(self, book_ids, covers_changed=True, tag_browser_changed=True):
         if book_ids:
             cr = self.gui.library_view.currentIndex().row()
             self.gui.library_view.model().refresh_ids(
                 list(book_ids), cr)
-            if covers_changed and self.gui.cover_flow:
-                self.gui.cover_flow.dataChanged()
+            if covers_changed:
+                self.gui.refresh_cover_browser()
             if tag_browser_changed:
                 self.gui.tags_view.recount()
 
     # }}}
 
+    def remove_metadata_item(self, book_id, field, value):
+        db = self.gui.current_db.new_api
+        fm = db.field_metadata[field]
+        affected_books = set()
+        if field == 'identifiers':
+            identifiers = db.field_for(field, book_id)
+            if identifiers.pop(value, False) is not False:
+                affected_books = db.set_field(field, {book_id:identifiers})
+        elif fm['is_multiple']:
+            item_id = db.get_item_id(field, value)
+            if item_id is not None:
+                affected_books = db.remove_items(field, (item_id,), {book_id})
+        else:
+            affected_books = db.set_field(field, {book_id:''})
+        if affected_books:
+            self.refresh_books_after_metadata_edit(affected_books)

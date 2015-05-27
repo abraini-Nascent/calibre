@@ -53,7 +53,7 @@ class Stylizer(object):
     STYLESHEETS = WeakKeyDictionary()
 
     def __init__(self, tree, path, oeb, opts, profile=None,
-            extra_css='', user_css=''):
+            extra_css='', user_css='', base_css=''):
         self.oeb, self.opts = oeb, opts
         self.profile = profile
         if self.profile is None:
@@ -74,6 +74,8 @@ class Stylizer(object):
         basename = os.path.basename(path)
         cssname = os.path.splitext(basename)[0] + '.css'
         stylesheets = [html_css_stylesheet()]
+        if base_css:
+            stylesheets.append(parseString(base_css, validate=False))
         style_tags = xpath(tree, '//*[local-name()="style" or local-name()="link"]')
 
         # Add cssutils parsing profiles from output_profile
@@ -194,7 +196,7 @@ class Stylizer(object):
                     from lxml.builder import ElementMaker
                     E = ElementMaker(namespace=XHTML_NS)
                     for elem in matches:
-                        for x in elem.iter():
+                        for x in elem.iter('*'):
                             if x.text:
                                 punctuation_chars = []
                                 text = unicode(x.text)
@@ -511,7 +513,7 @@ class Style(object):
         x = self._style.get(attr)
         if x is not None:
             if x == 'auto':
-                ans = base
+                ans = self._unit_convert(str(img_size) + 'px', base=base)
             else:
                 x = self._unit_convert(x, base=base)
                 if isinstance(x, (float, int, long)):
@@ -532,7 +534,7 @@ class Style(object):
         return ans
 
     def img_size(self, width, height):
-        ' Return the final size of an <img> given that it points to an imafe of size widthxheight '
+        ' Return the final size of an <img> given that it points to an image of size widthxheight '
         return self.img_dimension('width', width), self.img_dimension('height', height)
 
     @property
@@ -642,6 +644,18 @@ class Style(object):
         if css in ('none', None, 'inherit') and pcss not in (None, 'none'):
             return pcss
         return css
+
+    @property
+    def first_vertical_align(self):
+        ''' For docx output where tags are not nested, we cannot directly
+        simulate the HTML vertical-align rendering model. Instead use the
+        approximation of considering the first non-default vertical-align '''
+        val = self['vertical-align']
+        if val != 'baseline':
+            return val
+        parent = self._get_parent()
+        if parent is not None and 'inline' in parent['display']:
+            return parent.first_vertical_align
 
     @property
     def marginTop(self):

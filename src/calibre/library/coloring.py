@@ -13,9 +13,11 @@ from textwrap import dedent
 
 color_row_key = '*row'
 
-class Rule(object): # {{{
+class Rule(object):  # {{{
 
     SIGNATURE = '# BasicColorRule():'
+
+    INVALID_CONDITION = _('INVALID CONDITION')
 
     def __init__(self, fm, color=None):
         self.color = color
@@ -28,6 +30,8 @@ class Rule(object): # {{{
         v = self.validate_condition(col, action, val)
         if v:
             raise ValueError(v)
+        if self.apply_condition((col, action, val)) is None:
+            action = self.INVALID_CONDITION
         self.conditions.append((col, action, val))
 
     def validate_condition(self, col, action, val):
@@ -56,7 +60,7 @@ class Rule(object): # {{{
     def template(self):
         if not self.color or not self.conditions:
             return None
-        conditions = map(self.apply_condition, self.conditions)
+        conditions = [x for x in map(self.apply_condition, self.conditions) if x is not None]
         conditions = (',\n' + ' '*9).join(conditions)
         return dedent('''\
                 program:
@@ -248,4 +252,3 @@ def migrate_old_rule(fm, template):
                 rules.append(r.template)
         return rules
     return [template]
-

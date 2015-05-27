@@ -13,7 +13,7 @@ from lxml.builder import ElementMaker
 
 from calibre import guess_type
 from calibre.constants import numeric_version, __appname__
-from calibre.ebooks.docx.names import namespaces, STYLES, WEB_SETTINGS, IMAGES, FONTS
+from calibre.ebooks.docx.names import DOCXNamespace
 from calibre.ebooks.metadata import authors_to_string
 from calibre.utils.date import utcnow
 from calibre.utils.localization import canonicalize_lang, lang_as_iso639_1
@@ -27,7 +27,14 @@ def xml2str(root, pretty_print=False, with_tail=False):
                           pretty_print=pretty_print, with_tail=with_tail)
     return ans
 
-def create_skeleton(opts):
+def page_size(opts):
+    width, height = PAPER_SIZES[opts.docx_page_size]
+    if opts.docx_custom_page_size is not None:
+        width, height = map(float, opts.docx_custom_page_size.partition('x')[0::2])
+    return width, height
+
+def create_skeleton(opts, namespaces=None):
+    namespaces = namespaces or DOCXNamespace().namespaces
     def w(x):
         return '{%s}%s' % (namespaces['w'], x)
     dn = {k:v for k, v in namespaces.iteritems() if k in {'w', 'r', 'm', 've', 'o', 'wp', 'w10', 'wne', 'a', 'pic'}}
@@ -35,9 +42,7 @@ def create_skeleton(opts):
     doc = E.document()
     body = E.body()
     doc.append(body)
-    width, height = PAPER_SIZES[opts.docx_page_size]
-    if opts.docx_custom_page_size is not None:
-        width, height = map(float, opts.docx_custom_page_size.partition('x')[0::2])
+    width, height = page_size(opts)
     width, height = int(20 * width), int(20 * height)
     def margin(which):
         return w(which), str(int(getattr(opts, 'margin_'+which) * 20))
@@ -70,9 +75,9 @@ def create_skeleton(opts):
     return doc, styles, body
 
 
-def update_doc_props(root, mi):
+def update_doc_props(root, mi, namespace):
     def setm(name, text=None, ns='dc'):
-        ans = root.makeelement('{%s}%s' % (namespaces[ns], name))
+        ans = root.makeelement('{%s}%s' % (namespace.namespaces[ns], name))
         for child in tuple(root):
             if child.tag == ans.tag:
                 root.remove(child)
@@ -92,12 +97,14 @@ def update_doc_props(root, mi):
 
 class DocumentRelationships(object):
 
-    def __init__(self):
+    def __init__(self, namespace):
         self.rmap = {}
+        self.namespace = namespace
         for typ, target in {
-                STYLES: 'styles.xml',
-                WEB_SETTINGS: 'webSettings.xml',
-                FONTS: 'fontTable.xml',
+                namespace.names['STYLES']: 'styles.xml',
+                namespace.names['NUMBERING']: 'numbering.xml',
+                namespace.names['WEB_SETTINGS']: 'webSettings.xml',
+                namespace.names['FONTS']: 'fontTable.xml',
         }.iteritems():
             self.add_relationship(target, typ)
 
@@ -112,9 +119,10 @@ class DocumentRelationships(object):
         return ans
 
     def add_image(self, target):
-        return self.add_relationship(target, IMAGES)
+        return self.add_relationship(target, self.namespace.names['IMAGES'])
 
     def serialize(self):
+        namespaces = self.namespace.namespaces
         E = ElementMaker(namespace=namespaces['pr'], nsmap={None:namespaces['pr']})
         relationships = E.Relationships()
         for (target, rtype, target_mode), rid in self.rmap.iteritems():
@@ -127,9 +135,12 @@ class DocumentRelationships(object):
 class DOCX(object):
 
     def __init__(self, opts, log):
+        self.namespace = DOCXNamespace()
+        namespaces = self.namespace.namespaces
         self.opts, self.log = opts, log
-        self.document_relationships = DocumentRelationships()
+        self.document_relationships = DocumentRelationships(self.namespace)
         self.font_table = etree.Element('{%s}fonts' % namespaces['w'], nsmap={k:namespaces[k] for k in 'wr'})
+        self.numbering = etree.Element('{%s}numbering' % namespaces['w'], nsmap={k:namespaces[k] for k in 'wr'})
         E = ElementMaker(namespace=namespaces['pr'], nsmap={None:namespaces['pr']})
         self.embedded_fonts = E.Relationships()
         self.fonts = {}
@@ -138,7 +149,7 @@ class DOCX(object):
     # Boilerplate {{{
     @property
     def contenttypes(self):
-        E = ElementMaker(namespace=namespaces['ct'], nsmap={None:namespaces['ct']})
+        E = ElementMaker(namespace=self.namespace.namespaces['ct'], nsmap={None:self.namespace.namespaces['ct']})
         types = E.Types()
         for partname, mt in {
             "/word/footnotes.xml": "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
@@ -174,7 +185,7 @@ class DOCX(object):
 
     @property
     def appproperties(self):
-        E = ElementMaker(namespace=namespaces['ep'], nsmap={None:namespaces['ep']})
+        E = ElementMaker(namespace=self.namespace.namespaces['ep'], nsmap={None:self.namespace.namespaces['ep']})
         props = E.Properties(
             E.Application(__appname__),
             E.AppVersion('%02d.%04d' % numeric_version[:2]),
@@ -193,14 +204,14 @@ class DOCX(object):
         return textwrap.dedent(b'''\
         <?xml version='1.0' encoding='utf-8'?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-            <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
-            <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
-            <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-        </Relationships>''')
+            <Relationship Id="rId3" Type="{APPPROPS}" Target="docProps/app.xml"/>
+            <Relationship Id="rId2" Type="{DOCPROPS}" Target="docProps/core.xml"/>
+            <Relationship Id="rId1" Type="{DOCUMENT}" Target="word/document.xml"/>
+        </Relationships>'''.format(**self.namespace.names))
 
     @property
     def websettings(self):
-        E = ElementMaker(namespace=namespaces['w'], nsmap={'w':namespaces['w']})
+        E = ElementMaker(namespace=self.namespace.namespaces['w'], nsmap={'w':self.namespace.namespaces['w']})
         ws = E.webSettings(
             E.optimizeForBrowser, E.allowPNG, E.doNotSaveAsSingleFile)
         return xml2str(ws)
@@ -208,6 +219,7 @@ class DOCX(object):
     # }}}
 
     def convert_metadata(self, mi):
+        namespaces = self.namespace.namespaces
         E = ElementMaker(namespace=namespaces['cp'], nsmap={x:namespaces[x] for x in 'cp dc dcterms xsi'.split()})
         cp = E.coreProperties(E.revision("1"), E.lastModifiedBy('calibre'))
         ts = utcnow().isoformat(str('T')).rpartition('.')[0] + 'Z'
@@ -216,7 +228,7 @@ class DOCX(object):
             x.text = ts
             cp.append(x)
         self.mi = mi
-        update_doc_props(cp, self.mi)
+        update_doc_props(cp, self.mi, self.namespace)
         return xml2str(cp)
 
     def create_empty_document(self, mi):
@@ -233,6 +245,7 @@ class DOCX(object):
             zf.writestr('word/webSettings.xml', self.websettings)
             zf.writestr('word/document.xml', xml2str(self.document))
             zf.writestr('word/styles.xml', xml2str(self.styles))
+            zf.writestr('word/numbering.xml', xml2str(self.numbering))
             zf.writestr('word/fontTable.xml', xml2str(self.font_table))
             zf.writestr('word/_rels/document.xml.rels', self.document_relationships.serialize())
             zf.writestr('word/_rels/fontTable.xml.rels', xml2str(self.embedded_fonts))

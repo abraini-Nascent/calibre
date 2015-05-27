@@ -125,12 +125,12 @@ class ConnectionListener(Thread):
                         getattr(self.driver, 'listen_socket', None) is not None:
                 ans = select.select((self.driver.listen_socket,), (), (), 0)
                 if len(ans[0]) > 0:
-                    # timeout in 10 ms to detect rare case where the socket goes
+                    # timeout in 100 ms to detect rare case where the socket goes
                     # away between the select and the accept
                     try:
                         self.driver._debug('attempt to open device socket')
                         device_socket = None
-                        self.driver.listen_socket.settimeout(0.010)
+                        self.driver.listen_socket.settimeout(0.100)
                         device_socket, ign = eintr_retry_call(
                                 self.driver.listen_socket.accept)
                         set_socket_inherit(device_socket, False)
@@ -351,6 +351,7 @@ class SMART_DEVICE_APP(DeviceConfig, DevicePlugin):
         self.noop_counter = 0
         self.debug_start_time = time.time()
         self.debug_time = time.time()
+        self.is_connected = False
 
     def _debug(self, *args):
         # manual synchronization so we don't lose the calling method name
@@ -1595,7 +1596,7 @@ class SMART_DEVICE_APP(DeviceConfig, DevicePlugin):
                                              'for details'))
                     return (None, True)
 
-                cc_mtime = parse_date(book.get('_format_mtime_'), as_utc=False)
+                cc_mtime = parse_date(book.get('_format_mtime_'), as_utc=True)
                 self._debug(book.title, 'cal_mtime', calibre_mtime, 'cc_mtime', cc_mtime)
                 if cc_mtime < calibre_mtime:
                     book.set('_format_mtime_', isoformat(self.now))
@@ -1798,6 +1799,7 @@ class SMART_DEVICE_APP(DeviceConfig, DevicePlugin):
     @synchronous('sync_lock')
     def startup(self):
         self.listen_socket = None
+        self.is_connected = False
 
     @synchronous('sync_lock')
     def startup_on_demand(self):

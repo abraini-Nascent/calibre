@@ -1078,7 +1078,7 @@ class DeviceMixin(object):  # {{{
             if self.current_view() != self.library_view:
                 self.book_details.reset_info()
             self.location_manager.update_devices()
-            self.bars_manager.update_bars()
+            self.bars_manager.update_bars(reveal_bar=True)
             self.library_view.set_device_connected(self.device_connected)
             # Empty any device view information
             self.memory_view.set_database([])
@@ -1096,7 +1096,7 @@ class DeviceMixin(object):  # {{{
         info, cp, fs = job.result
         self.location_manager.update_devices(cp, fs,
                 self.device_manager.device.icon)
-        self.bars_manager.update_bars()
+        self.bars_manager.update_bars(reveal_bar=True)
         self.status_bar.device_connected(info[0])
         db = self.current_db
         self.device_manager.set_library_information(None, os.path.basename(db.library_path),
@@ -1168,6 +1168,9 @@ class DeviceMixin(object):  # {{{
         '''
         Called once deletion is done on the device
         '''
+        cv, row = self.current_view(), -1
+        if cv is not self.library_view:
+            row = cv.currentIndex().row()
         for view in (self.memory_view, self.card_a_view, self.card_b_view):
             view.model().deletion_done(job, job.failed)
         if job.failed:
@@ -1186,11 +1189,14 @@ class DeviceMixin(object):  # {{{
         # if set_books_in_library did not.
         if not self.set_books_in_library(self.booklists(), reset=True,
                                  add_as_step_to_job=job, do_device_sync=False):
+
             self.upload_booklists(job)
         # We need to reset the ondevice flags in the library. Use a big hammer,
         # so we don't need to worry about whether some succeeded or not.
         self.refresh_ondevice()
 
+        if row > -1:
+            cv.set_current_row(row)
         try:
             if not self.current_view().currentIndex().isValid():
                 self.current_view().set_current_row()
@@ -1568,9 +1574,14 @@ class DeviceMixin(object):  # {{{
                 self.device_manager.device.icon)
         # reset the views so that up-to-date info is shown. These need to be
         # here because some drivers update collections in sync_booklists
+        cv, row = self.current_view(), -1
+        if cv is not self.library_view:
+            row = cv.currentIndex().row()
         self.memory_view.reset()
         self.card_a_view.reset()
         self.card_b_view.reset()
+        if row > -1:
+            cv.set_current_row(row)
 
     def _upload_collections(self, job):
         if job.failed:
@@ -1814,8 +1825,8 @@ class DeviceMixin(object):  # {{{
 
                 return (db.metadata_last_modified(id_, index_is_id=True) !=
                         getattr(book, 'last_modified', None) or
-                        (isinstance(getattr(book, 'thumbnail', None), (list, tuple))
-                         and max(book.thumbnail[0], book.thumbnail[1]) != desired_thumbnail_height
+                        (isinstance(getattr(book, 'thumbnail', None), (list, tuple)) and
+                         max(book.thumbnail[0], book.thumbnail[1]) != desired_thumbnail_height
                         )
                        )
             except:

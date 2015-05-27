@@ -8,7 +8,6 @@ __copyright__ = '2015, Kovid Goyal <kovid at kovidgoyal.net>'
 
 from collections import namedtuple
 
-from calibre.ebooks.docx.names import makeelement
 from calibre.ebooks.docx.writer.utils import convert_color
 from calibre.ebooks.docx.writer.styles import read_css_block_borders as rcbb, border_edges
 
@@ -18,6 +17,22 @@ class Dummy(object):
 Border = namedtuple('Border', 'css_style style width color level')
 border_style_weight = {
     x:100-i for i, x in enumerate(('double', 'solid', 'dashed', 'dotted', 'ridge', 'outset', 'groove', 'inset'))}
+
+class SpannedCell(object):
+
+    def __init__(self, spanning_cell, horizontal=True):
+        self.spanning_cell = spanning_cell
+        self.horizontal = horizontal
+        self.row_span = self.col_span = 1
+
+    def resolve_borders(self):
+        pass
+
+    def serialize(self, tr, makeelement):
+        tc = makeelement(tr, 'w:tc')
+        tcPr = makeelement(tc, 'w:tcPr')
+        makeelement(tcPr, 'w:%sMerge' % ('h' if self.horizontal else 'v'), w_val='continue')
+        makeelement(tc, 'w:p')
 
 def read_css_block_borders(self, css):
     obj = Dummy()
@@ -30,6 +45,7 @@ def read_css_block_borders(self, css):
             getattr(obj, 'border_%s_color' % edge),
             self.BLEVEL
         ))
+        setattr(self, 'padding_' + edge, getattr(obj, 'padding_' + edge))
 
 def as_percent(x):
     if x and x.endswith('%'):
@@ -53,14 +69,6 @@ def convert_width(tag_style):
                 pass
     return ('auto', 0)
 
-def serialize_border_edge(self, bdr, edge):
-    width = getattr(self, 'border_%s_width' % edge)
-    bstyle = getattr(self, 'border_%s_style' % edge)
-    if width > 0 and bstyle != 'none':
-        makeelement(bdr, 'w:' + edge, w_val=bstyle, w_sz=str(width), w_color=getattr(self, 'border_%s_color' % edge))
-        return True
-    return False
-
 class Cell(object):
 
     BLEVEL = 2
@@ -69,6 +77,15 @@ class Cell(object):
         self.row = row
         self.table = self.row.table
         self.html_tag = html_tag
+        try:
+            self.row_span = max(0, int(html_tag.get('rowspan', 1)))
+        except Exception:
+            self.row_span = 1
+        try:
+            self.col_span = max(0, int(html_tag.get('colspan', 1)))
+        except Exception:
+            self.col_span = 1
+        self.valign = {'top':'top', 'bottom':'bottom', 'middle':'center'}.get(tag_style._get('vertical-align'))
         self.items = []
         self.width = convert_width(tag_style)
         self.background_color = None if tag_style is None else convert_color(tag_style.backgroundColor)
@@ -76,12 +93,13 @@ class Cell(object):
 
     def add_block(self, block):
         self.items.append(block)
+        block.parent_items = self.items
 
     def add_table(self, table):
         self.items.append(table)
         return table
 
-    def serialize(self, parent):
+    def serialize(self, parent, makeelement):
         tc = makeelement(parent, 'w:tc')
         tcPr = makeelement(tc, 'w:tcPr')
         makeelement(tcPr, 'w:tcW', w_type=self.width[0], w_w=str(self.width[1]))
@@ -91,15 +109,38 @@ class Cell(object):
         bc = self.background_color or self.row.background_color or self.row.table.background_color
         if bc:
             makeelement(tcPr, 'w:shd', w_val="clear", w_color="auto", w_fill=bc)
+
         b = makeelement(tcPr, 'w:tcBorders', append=False)
         for edge, border in self.borders.iteritems():
-            if border.width > 0 and border.style != 'none':
+            if border is not None and border.width > 0 and border.style != 'none':
                 makeelement(b, 'w:' + edge, w_val=border.style, w_sz=str(border.width), w_color=border.color)
         if len(b) > 0:
             tcPr.append(b)
 
+        m = makeelement(tcPr, 'w:tcMar', append=False)
+        for edge in border_edges:
+            padding = getattr(self, 'padding_' + edge)
+            if edge in {'top', 'bottom'} or (edge == 'left' and self is self.row.first_cell) or (edge == 'right' and self is self.row.last_cell):
+                padding += getattr(self.row, 'padding_' + edge)
+            if padding > 0:
+                makeelement(m, 'w:' + edge, w_type='dxa', w_w=str(int(padding * 20)))
+        if len(m) > 0:
+            tcPr.append(m)
+
+        if self.valign is not None:
+            makeelement(tcPr, 'w:vAlign', w_val=self.valign)
+
+        if self.row_span > 1:
+            makeelement(tcPr, 'w:vMerge', w_val='restart')
+        if self.col_span > 1:
+            makeelement(tcPr, 'w:hMerge', w_val='restart')
+
+        item = None
         for item in self.items:
             item.serialize(tc)
+        if item is None or isinstance(item, Table):
+            # Word 2007 requires the last element in a table cell to be a paragraph
+            makeelement(tc, 'w:p')
 
     def applicable_borders(self, edge):
         if edge == 'left':
@@ -191,26 +232,32 @@ class Row(object):
     def add_table(self, table):
         return self.current_cell.add_table(table)
 
-    def serialize(self, parent):
+    def serialize(self, parent, makeelement):
         tr = makeelement(parent, 'w:tr')
         for cell in self.cells:
-            cell.serialize(tr)
+            cell.serialize(tr, makeelement)
 
 class Table(object):
 
     BLEVEL = 0
 
-    def __init__(self, html_tag, tag_style=None):
+    def __init__(self, namespace, html_tag, tag_style=None):
+        self.namespace = namespace
         self.html_tag = html_tag
         self.rows = []
         self.current_row = None
         self.width = convert_width(tag_style)
         self.background_color = None if tag_style is None else convert_color(tag_style.backgroundColor)
         self.jc = None
+        self.float = None
+        self.margin_left = self.margin_right = self.margin_top = self.margin_bottom = None
         if tag_style is not None:
             ml, mr = tag_style._get('margin-left'), tag_style.get('margin-right')
             if ml == 'auto':
                 self.jc = 'center' if mr == 'auto' else 'right'
+            self.float = tag_style['float']
+            for edge in border_edges:
+                setattr(self, 'margin_' + edge, tag_style['margin-' + edge])
         read_css_block_borders(self, tag_style)
 
     @property
@@ -229,10 +276,39 @@ class Table(object):
                 self.current_row = None
         table_ended = self.html_tag is html_tag
         if table_ended:
+            self.expand_spanned_cells()
             for row in self.rows:
                 for cell in row.cells:
                     cell.resolve_borders()
         return table_ended
+
+    def expand_spanned_cells(self):
+        # Expand horizontally
+        for row in self.rows:
+            for cell in tuple(row.cells):
+                idx = row.cells.index(cell)
+                if cell.col_span > 1 and (cell is row.cells[-1] or not isinstance(row.cells[idx+1], SpannedCell)):
+                    row.cells[idx:idx+1] = [cell] + [SpannedCell(cell, horizontal=True) for i in xrange(1, cell.col_span)]
+
+        # Expand vertically
+        for r, row in enumerate(self.rows):
+            for idx, cell in enumerate(row.cells):
+                if cell.row_span > 1:
+                    for nrow in self.rows[r+1:]:
+                        sc = SpannedCell(cell, horizontal=False)
+                        try:
+                            tcell = nrow.cells[idx]
+                        except Exception:
+                            tcell = None
+                        if tcell is None:
+                            nrow.cells.extend([SpannedCell(nrow.cells[-1], horizontal=True) for i in xrange(idx - len(nrow.cells))])
+                            nrow.cells.append(sc)
+                        else:
+                            if isinstance(tcell, SpannedCell):
+                                # Conflict between rowspan and colspan
+                                break
+                            else:
+                                nrow.cells.insert(idx, sc)
 
     def start_new_row(self, html_tag, html_style):
         if self.current_row is not None:
@@ -251,13 +327,22 @@ class Table(object):
         return self.current_row.add_table(table)
 
     def serialize(self, parent):
+        makeelement = self.namespace.makeelement
         rows = [r for r in self.rows if r.cells]
         if not rows:
             return
         tbl = makeelement(parent, 'w:tbl')
         tblPr = makeelement(tbl, 'w:tblPr')
         makeelement(tblPr, 'w:tblW', w_type=self.width[0], w_w=str(self.width[1]))
+        if self.float in {'left', 'right'}:
+            kw = {'w_vertAnchor':'text', 'w_horzAnchor':'text', 'w_tblpXSpec':self.float}
+            for edge in border_edges:
+                val = getattr(self, 'margin_' + edge) or 0
+                if {self.float, edge} == {'left', 'right'}:
+                    val = max(val, 2)
+                kw['w_' + edge + 'FromText'] = str(max(0, int(val *20)))
+            makeelement(tblPr, 'w:tblpPr', **kw)
         if self.jc is not None:
             makeelement(tblPr, 'w:jc', w_val=self.jc)
         for row in rows:
-            row.serialize(tbl)
+            row.serialize(tbl, makeelement)

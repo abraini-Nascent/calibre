@@ -87,7 +87,7 @@ _gui = None
 def get_gui():
     return _gui
 
-def add_quick_start_guide(library_view, db_images):
+def add_quick_start_guide(library_view, refresh_cover_browser=None):
     from calibre.ebooks.metadata.meta import get_metadata
     from calibre.ebooks import calibre_cover
     from calibre.utils.zipfile import safe_replace
@@ -112,8 +112,8 @@ def add_quick_start_guide(library_view, db_images):
     library_view.model().add_books([tmp.name], ['epub'], [mi])
     os.remove(tmp.name)
     library_view.model().books_added(1)
-    if hasattr(db_images, 'reset'):
-        db_images.reset()
+    if refresh_cover_browser is not None:
+        refresh_cover_browser()
     if library_view.model().rowCount(None) < 3:
         library_view.resizeColumnsToContents()
 
@@ -209,7 +209,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
         else:
             stmap[st.name] = st
 
-    def initialize(self, library_path, db, listener, actions, show_gui=True, splash_screen=None):
+    def initialize(self, library_path, db, listener, actions, show_gui=True):
         opts = self.opts
         self.preferences_action, self.quit_action = actions
         self.library_path = library_path
@@ -335,8 +335,6 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
 
         if show_gui:
             self.show()
-        if splash_screen is not None:
-            splash_screen.hide()
 
         if self.system_tray_icon is not None and self.system_tray_icon.isVisible() and opts.start_in_tray:
             self.hide_windows()
@@ -344,7 +342,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                 self.iactions['Choose Library'].count_changed)
         if not gprefs.get('quick_start_guide_added', False):
             try:
-                add_quick_start_guide(self.library_view, getattr(self, 'db_images', None))
+                add_quick_start_guide(self.library_view)
             except:
                 import traceback
                 traceback.print_exc()
@@ -733,7 +731,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
         self.set_number_of_books_shown()
         self.update_status_bar()
 
-    def job_exception(self, job, dialog_title=_('Conversion Error')):
+    def job_exception(self, job, dialog_title=_('Conversion Error'), retry_func=None):
         if not hasattr(self, '_modeless_dialogs'):
             self._modeless_dialogs = []
         minz = self.is_minimized_to_tray
@@ -815,7 +813,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
         if not minz:
             self.job_error_dialog.show_error(dialog_title,
                     _('<b>Failed</b>')+': '+unicode(job.description),
-                    det_msg=job.details)
+                    det_msg=job.details, retry_func=retry_func)
 
     def read_settings(self):
         geometry = config['main_window_geometry']

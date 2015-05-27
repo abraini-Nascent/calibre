@@ -303,7 +303,7 @@ class RuleEditor(QDialog):  # {{{
         self.setLayout(l)
 
         self.l1 = l1 = QLabel(_('Create a {0} rule by'
-            ' filling in the boxes below'.format(rule_text)))
+            ' filling in the boxes below').format(rule_text))
         l.addWidget(l1, 0, 0, 1, 8)
 
         self.f1 = QFrame(self)
@@ -503,7 +503,7 @@ class RuleEditor(QDialog):  # {{{
         try:
             path = choose_files(self, 'choose_category_icon',
                         _('Select Icon'), filters=[
-                        ('Images', ['png', 'gif', 'jpg', 'jpeg'])],
+                        (_('Images'), ['png', 'gif', 'jpg', 'jpeg'])],
                     all_files=False, select_only_single_file=True)
             if path:
                 icon_path = path[0]
@@ -836,6 +836,10 @@ class RulesModel(QAbstractListModel):  # {{{
                 else:
                     continue
                 break
+        if action_name == Rule.INVALID_CONDITION:
+            return (
+                _('<li>The condition using column <b>%(col)s</b> is <b>invalid</b>')
+                % dict(col=c))
         return (
             _('<li>If the <b>%(col)s</b> column <b>%(action)s</b> value: <b>%(val)s</b>') % dict(
                 col=c, action=action_name, val=prepare_string_for_xml(v)))
@@ -864,7 +868,7 @@ class EditRules(QWidget):  # {{{
         self.add_button = QPushButton(QIcon(I('plus.png')), _('Add Rule'),
                 self)
         self.remove_button = QPushButton(QIcon(I('minus.png')),
-                _('Remove Rule'), self)
+                _('Remove Rule(s)'), self)
         self.add_button.clicked.connect(self.add_rule)
         self.remove_button.clicked.connect(self.remove_rule)
         l.addWidget(self.add_button, l.rowCount(), 0)
@@ -873,7 +877,7 @@ class EditRules(QWidget):  # {{{
         self.g = g = QGridLayout()
         self.rules_view = QListView(self)
         self.rules_view.doubleClicked.connect(self.edit_rule)
-        self.rules_view.setSelectionMode(self.rules_view.SingleSelection)
+        self.rules_view.setSelectionMode(self.rules_view.ExtendedSelection)
         self.rules_view.setAlternatingRowColors(True)
         self.rtfd = RichTextDelegate(parent=self.rules_view, max_width=400)
         self.rules_view.setItemDelegate(self.rtfd)
@@ -929,7 +933,7 @@ class EditRules(QWidget):  # {{{
             self.enabled.setText(_('Show &emblems next to the covers'))
             self.enabled.stateChanged.connect(self.enabled_toggled)
             self.enabled.setToolTip(_(
-                'If checked, you can tell calibre to displays icons of your choosing'
+                'If checked, you can tell calibre to display icons of your choosing'
                 ' next to the covers shown in the cover grid, controlled by the'
                 ' metadata of the book.'))
             self.enabled_toggled()
@@ -1003,12 +1007,13 @@ class EditRules(QWidget):  # {{{
             error_dialog(self, _('No rule selected'),
                     _('No rule selected for %s.')%txt, show=True)
             return None
-        return rows[0]
+        return sorted(rows, reverse=True)
 
     def remove_rule(self):
-        row = self.get_selected_row(_('removal'))
-        if row is not None:
-            self.model.remove_rule(row)
+        rows = self.get_selected_row(_('removal'))
+        if rows is not None:
+            for row in rows:
+                self.model.remove_rule(row)
             self.changed.emit()
 
     def move_up(self):

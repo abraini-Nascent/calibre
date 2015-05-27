@@ -5,6 +5,7 @@ __docformat__ = 'restructuredtext en'
 
 import re
 from calibre.utils import zipfile
+from calibre.utils.icu import numeric_sort_key
 
 def update(pathtozip, patterns, filepaths, names, compression=zipfile.ZIP_DEFLATED, verbose=True):
     '''
@@ -40,15 +41,20 @@ def extract(filename, dir):
     """
     Extract archive C{filename} into directory C{dir}
     """
-    zf = zipfile.ZipFile( filename )
+    zf = zipfile.ZipFile(filename)
     zf.extractall(dir)
 
-def extract_member(filename, match=re.compile(r'\.(jpg|jpeg|gif|png)\s*$',
-    re.I), sort_alphabetically=False):
+def sort_key(filename):
+    bn, ext = filename.rpartition('.')[::2]
+    if not bn and ext:
+        bn, ext = ext, bn
+    return (numeric_sort_key(bn), numeric_sort_key(ext))
+
+def extract_member(filename, match=re.compile(r'\.(jpg|jpeg|gif|png)\s*$', re.I), sort_alphabetically=False):
     zf = zipfile.ZipFile(filename)
     names = list(zf.namelist())
     if sort_alphabetically:
-        names.sort()
+        names.sort(key=sort_key)
     for name in names:
         if match.search(name):
             return name, zf.read(name)
